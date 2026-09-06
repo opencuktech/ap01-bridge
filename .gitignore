@@ -1,0 +1,8 @@
+.idea/
+*.iml
+target
+.agents/
+.claude/
+.pi/
+openspec/
+docs/handoff/
