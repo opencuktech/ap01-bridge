@@ -1,6 +1,9 @@
-[package]
-name = "cuktech-ap01-bridge"
+[workspace]
+resolver = "3"
+members = ["crates/ap01-gif", "crates/ap01-bridge-kernel", "crates/ap01-bridge"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-
-[dependencies]
+rust-version = "1.89"
+license = "MIT"

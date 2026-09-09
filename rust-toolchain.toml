@@ -1,0 +1,3 @@
+# 最低支持 Rust 1.89（File::try_lock 稳定版本），由工作区的 rust-version 声明。
+[toolchain]
+channel = "stable"
