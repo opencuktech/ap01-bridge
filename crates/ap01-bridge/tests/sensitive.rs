@@ -20,9 +20,12 @@ fn capture_commands(dir: &Path) -> String {
     let file = dir.join("frame.gif");
     fs::write(&file, GifBuilder::default().frame(Frame::default()).build()).unwrap();
     let file = file.to_str().expect("测试夹具路径应为有效文本");
+    let missing_prefs = dir.join("missing-prefs");
+    let missing_prefs = missing_prefs.to_str().unwrap();
     let mut haystack = String::new();
     for (args, code) in [
         (vec!["doctor"], 0),
+        (vec!["mi", "ap01", "--prefs", missing_prefs], 4),
         (vec!["validate", file], 0),
         (vec!["fallback", "set", "boot", file], 0),
         (
@@ -35,6 +38,16 @@ fn capture_commands(dir: &Path) -> String {
     ] {
         for json_mode in [false, true] {
             let mut command = bridge();
+            for name in [
+                "AP01_BRIDGE_MI_USER_ID",
+                "AP01_BRIDGE_MI_PASS_TOKEN",
+                "AP01_BRIDGE_MI_DEVICE_ID",
+                "AP01_BRIDGE_MI_CREDENTIALS",
+                "AP01_BRIDGE_MI_KEYCHAIN_SERVICE",
+                "AP01_BRIDGE_MI_KEYCHAIN_ACCOUNT",
+            ] {
+                command.env_remove(name);
+            }
             command.arg("--data-dir").arg(dir).args(&args);
             command.env("AP01_BRIDGE_FAKE_NOW", "1000");
             if json_mode {
@@ -60,12 +73,14 @@ fn assert_no_sensitive_data(haystack: &str) {
         "cookie",
         "Cookie",
         "serviceToken",
+        "ssecurity",
         "passToken",
         "userId",
         "deviceId",
         "did=",
         "DID",
         "https://",
+        "http://",
         "ota_url",
         "OTA_URL",
         ".bin",
@@ -197,4 +212,10 @@ fn serve_outputs_and_access_log_do_not_contain_sensitive_data() {
     assert_eq!(log.lines().count(), 1, "画面请求应产生一条访问日志");
     haystack.push_str(&log);
     assert_no_sensitive_data(&haystack);
+}
+
+#[test]
+#[should_panic(expected = "捕获输出包含禁用子串：ssecurity")]
+fn sensitive_guard_rejects_ssecurity() {
+    assert_no_sensitive_data(r#"{"ok":false,"message":"ssecurity"}"#);
 }

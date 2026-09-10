@@ -14,6 +14,8 @@ use clap::{Parser, Subcommand, error::ErrorKind};
 use serde::Serialize;
 use serde_json::json;
 
+mod mi_commands;
+use mi_commands::MiCommands;
 mod serve_commands;
 mod store_commands;
 use store_commands::FallbackCommands;
@@ -33,6 +35,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// 查询云端设备信息。
+    Mi {
+        #[command(subcommand)]
+        command: MiCommands,
+    },
     /// 检查系统、版本和数据目录。
     Doctor,
     /// 只读校验 GIF 文件，使用 - 从标准输入读取到结束。
@@ -115,14 +122,17 @@ fn run() -> Result<Output, KernelError> {
             ) {
                 error.exit();
             }
-            // 保留 clap 的用法说明，统一出口另外提供中文错误及 JSON 对象。
-            let _ = error.print();
+            // 云端用法错误不回显原始参数，避免路径或凭据进入诊断。
+            if !std::env::args_os().skip(1).any(|arg| arg == "mi") {
+                let _ = error.print();
+            }
             return Err(KernelError::Usage(
                 "命令用法不正确，请使用 --help 查看帮助".into(),
             ));
         }
     };
     match cli.command {
+        Commands::Mi { command } => mi_commands::run(command, cli.json),
         Commands::Doctor => {
             let resolved = resolve_data_dir(
                 cli.data_dir.as_deref(),

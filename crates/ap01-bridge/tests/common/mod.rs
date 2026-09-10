@@ -33,6 +33,11 @@ impl Drop for TempDir {
 pub fn bridge() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_bridge"));
     command.env_clear();
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("AP01_BRIDGE_MI_") {
+            command.env_remove(name);
+        }
+    }
     // Windows 的系统库加载可能依赖这两个变量，其余宿主环境不继承。
     #[cfg(windows)]
     for name in ["PATH", "SystemRoot"] {

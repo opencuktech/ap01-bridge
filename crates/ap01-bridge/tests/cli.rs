@@ -243,3 +243,240 @@ fn json_usage_errors_are_single_objects_even_after_unknown_command() {
         assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
     }
 }
+
+const MI_CREDENTIAL_ENV: [&str; 6] = [
+    "AP01_BRIDGE_MI_USER_ID",
+    "AP01_BRIDGE_MI_PASS_TOKEN",
+    "AP01_BRIDGE_MI_DEVICE_ID",
+    "AP01_BRIDGE_MI_CREDENTIALS",
+    "AP01_BRIDGE_MI_KEYCHAIN_SERVICE",
+    "AP01_BRIDGE_MI_KEYCHAIN_ACCOUNT",
+];
+
+fn mi_bridge() -> std::process::Command {
+    let mut command = bridge();
+    remove_mi_credentials(&mut command);
+    command
+}
+
+fn remove_mi_credentials(command: &mut std::process::Command) {
+    for name in MI_CREDENTIAL_ENV {
+        command.env_remove(name);
+    }
+}
+
+#[test]
+fn mi_commands_explicitly_remove_host_credentials() {
+    let mut command = bridge();
+    for name in MI_CREDENTIAL_ENV {
+        command.env(name, "synthetic-value");
+    }
+    remove_mi_credentials(&mut command);
+    for name in MI_CREDENTIAL_ENV {
+        assert!(
+            command
+                .get_envs()
+                .all(|(key, value)| key != name || value.is_none())
+        );
+    }
+}
+
+fn assert_mi_state_error(output: &Output) -> Value {
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["error", "ok"]
+    );
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], 4);
+    assert!(value["error"]["message"].is_string());
+    value
+}
+
+#[test]
+fn mi_without_credentials_is_state_error_and_does_not_touch_data_dir() {
+    let data = TempDir::new();
+    let missing = data.0.join("missing-prefs");
+    let output = mi_bridge()
+        .args(["mi", "ap01", "--json", "--prefs"])
+        .arg(&missing)
+        .arg("--data-dir")
+        .arg(&data.0)
+        .output()
+        .unwrap();
+    assert_mi_state_error(&output);
+    assert_eq!(fs::read_dir(&data.0).unwrap().count(), 0);
+    let absent_data = data.0.join("not-created");
+    let output = mi_bridge()
+        .args(["mi", "ap01", "--json", "--prefs"])
+        .arg(&missing)
+        .arg("--data-dir")
+        .arg(&absent_data)
+        .output()
+        .unwrap();
+    assert_mi_state_error(&output);
+    assert!(!absent_data.exists());
+}
+
+#[test]
+fn mi_credentials_missing_fields_is_state_error() {
+    let temp = TempDir::new();
+    let file = temp.0.join("synthetic-credentials.json");
+    fs::write(&file, br#"{"user_id":"synthetic-user"}"#).unwrap();
+    let output = mi_bridge()
+        .args(["mi", "ap01", "--json", "--credentials"])
+        .arg(&file)
+        .arg("--prefs")
+        .arg(temp.0.join("missing-prefs"))
+        .output()
+        .unwrap();
+    assert_mi_state_error(&output);
+}
+
+#[test]
+fn mi_missing_subcommand_or_option_value_is_usage_error() {
+    let temp = TempDir::new();
+    for args in [
+        vec!["mi"],
+        vec!["mi", "unknown"],
+        vec![
+            "mi",
+            "ap01",
+            "--prefs",
+            temp.0.to_str().unwrap(),
+            "--credentials",
+        ],
+    ] {
+        let output = mi_bridge().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+}
+
+#[test]
+fn mi_platform_sources_have_identical_error_structure() {
+    let temp = TempDir::new();
+    for keychain in [false, true] {
+        let mut command = mi_bridge();
+        command
+            .args(["mi", "ap01", "--json", "--prefs"])
+            .arg(temp.0.join("missing-prefs"));
+        if keychain {
+            command.env(
+                "AP01_BRIDGE_MI_KEYCHAIN_SERVICE",
+                format!(
+                    "ap01-synthetic-missing-{}",
+                    temp.0.file_name().unwrap().to_string_lossy()
+                ),
+            );
+        }
+        let output = command.output().unwrap();
+        let value = assert_mi_state_error(&output);
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("仅 macOS 可用")
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("无法从")
+        );
+    }
+}
+
+#[test]
+fn mi_help_omits_debug_environment_seams() {
+    for args in [vec!["--help"], vec!["mi", "ap01", "--help"]] {
+        let output = mi_bridge().args(args).output().unwrap();
+        assert_success(&output);
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(!text.contains("AP01_BRIDGE_MI_ACCOUNT_URL"));
+        assert!(!text.contains("AP01_BRIDGE_MI_API_URL"));
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn mi_invalid_endpoint_override_fails_before_network() {
+    let temp = TempDir::new();
+    let output = mi_bridge()
+        .args(["mi", "ap01", "--json", "--prefs"])
+        .arg(temp.0.join("missing-prefs"))
+        .env("AP01_BRIDGE_MI_USER_ID", "synthetic-user")
+        .env("AP01_BRIDGE_MI_PASS_TOKEN", "synthetic-pass")
+        .env("AP01_BRIDGE_MI_ACCOUNT_URL", "http://example.invalid")
+        .output()
+        .unwrap();
+    assert_mi_state_error(&output);
+}
+
+#[test]
+fn mi_usage_errors_do_not_echo_raw_arguments() {
+    let temp = TempDir::new();
+    for json_mode in [false, true] {
+        let mut command = mi_bridge();
+        command
+            .args(["mi", "ap01", "--prefs"])
+            .arg(temp.0.join("missing-prefs"))
+            .arg("synthetic-passToken");
+        if json_mode {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(bytes).contains("synthetic-passToken"));
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn mi_first_connection_failure_is_runtime_error() {
+    // 先取得独占回环端口再关闭监听，整个用例只连接本机。
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).expect("需要可绑定回环端口的本地环境");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    for json_mode in [false, true] {
+        let temp = TempDir::new();
+        let mut command = mi_bridge();
+        command
+            .args(["mi", "ap01", "--prefs"])
+            .arg(temp.0.join("missing-prefs"))
+            .arg("--data-dir")
+            .arg(&temp.0)
+            .env("AP01_BRIDGE_MI_USER_ID", "synthetic-user")
+            .env("AP01_BRIDGE_MI_PASS_TOKEN", "synthetic-pass")
+            .env("AP01_BRIDGE_MI_ACCOUNT_URL", &base)
+            .env("AP01_BRIDGE_MI_API_URL", &base);
+        if json_mode {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(5));
+        if json_mode {
+            assert!(output.stderr.is_empty());
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["ok"], false);
+            assert_eq!(value["error"]["code"], 5);
+        }
+        for bytes in [&output.stdout, &output.stderr] {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(!text.contains("synthetic-"));
+            assert!(!text.contains(&base));
+        }
+        assert_eq!(fs::read_dir(&temp.0).unwrap().count(), 0);
+    }
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ap01-gif", "crates/ap01-bridge-kernel", "crates/ap01-bridge"]
+members = ["crates/ap01-gif", "crates/ap01-bridge-kernel", "crates/ap01-bridge", "crates/ap01-mi-cloud"]
 
 [workspace.package]
 version = "0.1.0"
